@@ -57,14 +57,17 @@ function askDelayRange() {
     return new Promise((resolve) => {
         rl.question('Введите минимальное время задержки (в минутах): ', (minDelay) => {
             rl.question('Введите максимальное время задержки (в минутах): ', (maxDelay) => {
-                const min = parseInt(minDelay);
-                const max = parseInt(maxDelay);
-                if (isNaN(min) || isNaN(max) || min < 0 || max < min) {
-                    log('Некорректный ввод. Используем значения по умолчанию: 1-5 минут', 'warning');
-                    resolve({ min: 1, max: 5 });
-                } else {
-                    resolve({ min, max });
-                }
+                rl.question('Введите максимальный газ в gwei (0 = без лимита): ', (maxGwei) => {
+                    const min = parseInt(minDelay);
+                    const max = parseInt(maxDelay);
+                    const maxGas = parseInt(maxGwei);
+                    if (isNaN(min) || isNaN(max) || min < 0 || max < min) {
+                        log('Некорректный ввод задержки. Используем значения по умолчанию: 1-5 минут', 'warning');
+                        resolve({ min: 1, max: 5, maxGwei: maxGas || 0 });
+                    } else {
+                        resolve({ min, max, maxGwei: maxGas || 0 });
+                    }
+                });
             });
         });
     });
@@ -139,7 +142,30 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function processWallet(privateKey) {
+// Константы для работы с газом
+const ETH_RPC = 'https://eth-mainnet.blastapi.io/0e189c72-1523-48e1-8727-7dd520f19c1f';
+const ethWeb3 = new Web3(new Web3.providers.HttpProvider(ETH_RPC));
+
+// Функция для получения цены газа в Arbitrum
+async function getArbitrumGasPrice() {
+    try {
+        const gasPrice = await web3.eth.getGasPrice();
+        // Округляем вверх и добавляем 20% для надежности
+        const optimizedGasPrice = Math.ceil(Number(gasPrice) * 1.2).toString();
+        return optimizedGasPrice;
+    } catch (error) {
+        log(`Ошибка при получении цены газа из Arbitrum: ${error.message}`, 'error');
+        throw error;
+    }
+}
+
+// Функция для расчета оптимизированного gasLimit
+function calculateGasLimit(baseLimit) {
+    // Добавляем 10% к базовому значению
+    return Math.ceil(baseLimit * 1.1).toString();
+}
+
+async function processWallet(privateKey, maxGwei) {
     // Проверяем и форматируем ключ
     const formattedKey = validateAndFormatKey(privateKey);
     if (!formattedKey) {
@@ -166,47 +192,74 @@ async function processWallet(privateKey) {
         const balanceInEth = web3.utils.fromWei(balance, 'ether');
 
         if (parseFloat(balanceInEth) > 0) {
-            // Подготавливаем транзакцию
-            const nonce = await web3.eth.getTransactionCount(walletAddress);
-            
-            // Получаем текущую газовую цену и увеличиваем на 20%
-            const currentGasPrice = await web3.eth.getGasPrice();
-            const gasPrice = Math.floor(parseInt(currentGasPrice) * 1.2).toString(16);
-            const gasPriceHex = '0x' + gasPrice;
-            
-            const methodId = '0x161ac21f';
-            const params = [
-                NFT_CHECK_CONTRACT.slice(2).toLowerCase().padStart(64, '0'),
-                FEE_RECIPIENT.slice(2).toLowerCase().padStart(64, '0'),
-                MINTER_IF_NOT_PAYER.slice(2).toLowerCase().padStart(64, '0'),
-                '0000000000000000000000000000000000000000000000000000000000000001'
-            ];
-            const txData = methodId + params.join('');
-            const gasLimit = 353072;
+            try {
+                // Подготавливаем данные транзакции
+                const nonce = await web3.eth.getTransactionCount(walletAddress);
+                const methodId = '0x161ac21f';
+                const params = [
+                    NFT_CHECK_CONTRACT.slice(2).toLowerCase().padStart(64, '0'),
+                    FEE_RECIPIENT.slice(2).toLowerCase().padStart(64, '0'),
+                    MINTER_IF_NOT_PAYER.slice(2).toLowerCase().padStart(64, '0'),
+                    '0000000000000000000000000000000000000000000000000000000000000001'
+                ];
+                const txData = methodId + params.join('');
+                const baseGasLimit = 353072;
+                const gasLimit = calculateGasLimit(baseGasLimit);
 
-            const txObject = {
-                nonce: toHex(nonce),
-                gasPrice: gasPriceHex,
-                gas: toHex(gasLimit),
-                to: NFT_CONTRACT_ADDRESS,
-                value: '0x0',
-                data: txData,
-                chainId: 42161
-            };
+                // Ждем подходящей цены газа если установлен лимит
+                if (maxGwei > 0) {
+                    while (true) {
+                        const ethGasPrice = await ethWeb3.eth.getGasPrice();
+                        const ethGasPriceGwei = parseFloat(web3.utils.fromWei(ethGasPrice, 'gwei'));
+                        
+                        log(`Текущий газ в Ethereum: ${ethGasPriceGwei.toFixed(2)} gwei`, 'info');
+                        
+                        if (ethGasPriceGwei <= maxGwei) {
+                            log(`Газ в Ethereum в пределах нормы: ${ethGasPriceGwei.toFixed(2)} gwei`, 'success');
+                            break;
+                        }
+                        
+                        log(`Ожидание снижения газа (текущий: ${ethGasPriceGwei.toFixed(2)} gwei, максимальный: ${maxGwei} gwei)...`, 'warning');
+                        await sleep(60000); // Ждем минуту перед следующей проверкой
+                    }
+                }
 
-            const signedTx = await web3.eth.accounts.signTransaction(txObject, formattedKey);
-            const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
-            
-            log('Минт успешно выполнен!', 'success');
-            log(`Ссылка на транзакцию: ${EXPLORER_URL}${receipt.transactionHash}`, 'success');
-            return true;
+                // Получаем цену газа в Arbitrum и отправляем транзакцию
+                const gasPrice = await getArbitrumGasPrice();
+                
+                const txObject = {
+                    nonce: toHex(nonce),
+                    gasPrice: toHex(gasPrice),
+                    gas: toHex(gasLimit),
+                    to: NFT_CONTRACT_ADDRESS,
+                    value: '0x0',
+                    data: txData,
+                    chainId: 42161
+                };
+
+                const signedTx = await web3.eth.accounts.signTransaction(txObject, formattedKey);
+                const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+                
+                log('Минт успешно выполнен!', 'success');
+                log(`Ссылка на транзакцию: ${EXPLORER_URL}${receipt.transactionHash}`, 'success');
+                return true;
+            } catch (error) {
+                if (error.message.includes('gas')) {
+                    log(`Ошибка с газом: ${error.message}`, 'error');
+                } else if (error.message.includes('reverted')) {
+                    log('Транзакция отклонена: возможно высокий газ или другие проблемы', 'error');
+                } else {
+                    log(`Ошибка: ${error.message}`, 'error');
+                }
+                return true;
+            }
         } else {
             log('Недостаточно ETH на балансе', 'error');
             return false;
         }
     } catch (error) {
         log(`Ошибка: ${error.message}`, 'error');
-        return true; // Возвращаем true при ошибке, чтобы сделать паузу перед следующей попыткой
+        return true;
     }
 }
 
@@ -214,10 +267,15 @@ async function checkBalanceAndMint() {
     // Получаем диапазон задержки от пользователя
     const delayRange = await askDelayRange();
     log(`Установлен диапазон задержки: ${delayRange.min}-${delayRange.max} минут`, 'info');
+    if (delayRange.maxGwei > 0) {
+        log(`Установлен максимальный газ: ${delayRange.maxGwei} gwei`, 'info');
+    } else {
+        log('Ограничение по газу отключено', 'info');
+    }
     
     // Обрабатываем каждый кошелек
     for (let i = 0; i < PRIVATE_KEYS.length; i++) {
-        const needDelay = await processWallet(PRIVATE_KEYS[i]);
+        const needDelay = await processWallet(PRIVATE_KEYS[i], delayRange.maxGwei);
         
         // Делаем паузу только если была попытка минта или произошла ошибка
         if (needDelay && i < PRIVATE_KEYS.length - 1) {
