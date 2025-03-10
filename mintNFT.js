@@ -168,7 +168,12 @@ async function processWallet(privateKey) {
         if (parseFloat(balanceInEth) > 0) {
             // Подготавливаем транзакцию
             const nonce = await web3.eth.getTransactionCount(walletAddress);
-            const gasPrice = '0xc65d40';
+            
+            // Получаем текущую газовую цену и увеличиваем на 20%
+            const currentGasPrice = await web3.eth.getGasPrice();
+            const gasPrice = Math.floor(parseInt(currentGasPrice) * 1.2).toString(16);
+            const gasPriceHex = '0x' + gasPrice;
+            
             const methodId = '0x161ac21f';
             const params = [
                 NFT_CHECK_CONTRACT.slice(2).toLowerCase().padStart(64, '0'),
@@ -181,7 +186,7 @@ async function processWallet(privateKey) {
 
             const txObject = {
                 nonce: toHex(nonce),
-                gasPrice: gasPrice,
+                gasPrice: gasPriceHex,
                 gas: toHex(gasLimit),
                 to: NFT_CONTRACT_ADDRESS,
                 value: '0x0',
