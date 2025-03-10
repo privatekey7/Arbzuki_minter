@@ -1,0 +1,11 @@
+{
+  "name": "arbzukiswap-nft-minter",
+  "version": "1.0.0",
+  "description": "Скрипт для проверки баланса ETH и минта NFT Arbzukiswap в сети Arbitrum",
+  "main": "mintNFT.js",
+  "dependencies": {
+    "web3": "^4.5.0",
+    "@ethereumjs/tx": "^5.2.1",
+    "@ethereumjs/common": "^4.2.0"
+  }
+} 
