@@ -25,6 +25,6 @@
 
 ---
 
-💻 Скачать: [ссылка](https://github.com/privatekey7/SVM_balance_checker) 
+💻 Скачать: [ссылка](https://github.com/privatekey7/Arbzuki_minter)
 😘 Создано [@privatekey7](https://t.me/privatekey7)
 🛠 Поддержка: [@duroff_pavel](https://t.me/duroff_pavel) 
